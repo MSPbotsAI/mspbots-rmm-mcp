@@ -42,7 +42,6 @@ _STATUS_TO_CODE: dict[int, tuple[str, bool]] = {
     400: ("invalid_argument", False),
     403: ("unauthorized", False),
     404: ("not_found", False),
-    409: ("conflict", False),
     429: ("rate_limited", True),
     502: ("upstream_error", True),
 }
@@ -167,9 +166,11 @@ class FleetClient:
         except ValueError:
             body = {"raw_response": resp.text}
         if resp.status_code >= 400:
+            # `detail` on a Fleet error is documented as "the raw upstream
+            # response body" when the error originates from the real Fleet
+            # server — that can be arbitrary/unbounded content, so it is
+            # deliberately not folded into the message (SOP §4.2: never dump
+            # a full API response into a tool-visible error message).
             message = body.get("message") if isinstance(body, dict) else str(body)
-            detail = body.get("detail") if isinstance(body, dict) else None
-            if detail:
-                message = f"{message} | detail={detail}"
             raise FleetError(resp.status_code, message or "unknown error")
         return body

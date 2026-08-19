@@ -84,7 +84,7 @@ async def test_service_instructions_present_and_bounded():
         (400, "invalid_argument", False),
         (403, "unauthorized", False),
         (404, "not_found", False),
-        (409, "conflict", False),
+        (409, "invalid_argument", False),
         (429, "rate_limited", True),
         (500, "upstream_error", True),
         (502, "upstream_error", True),
