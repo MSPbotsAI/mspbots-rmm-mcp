@@ -20,7 +20,7 @@ def register(mcp: FastMCP, client_factory: Callable[[], FleetClient | None]) -> 
         page: Annotated[int, Field(description="0-based page number.")] = 0,
         per_page: Annotated[int, Field(description="Rows per page (max 200).")] = 25,
     ) -> str:
-        """List this tenant's saved queries plus the shared-library ones, by name."""
+        """List this tenant's saved queries, by name."""
         client = client_factory()
         if client is None:
             return NO_TOKEN
@@ -47,7 +47,7 @@ def register(mcp: FastMCP, client_factory: Callable[[], FleetClient | None]) -> 
         except FleetError as e:
             return e.to_envelope()
 
-    @mcp.tool(annotations=ToolAnnotations(idempotentHint=True))
+    @mcp.tool()
     async def mspbotsfleet_create_query(
         name: Annotated[str, Field(description="Query name, non-empty, ≤255 chars.")],
         sql: Annotated[
@@ -61,20 +61,16 @@ def register(mcp: FastMCP, client_factory: Callable[[], FleetClient | None]) -> 
         platform: Annotated[
             str | None, Field(description='"darwin" | "windows" | "linux"; omit for all.')
         ] = None,
-        shared: Annotated[
-            bool,
-            Field(
-                description="Publish to the org-wide shared library instead of "
-                "this tenant only. Requires the superAdmin role."
-            ),
-        ] = False,
     ) -> str:
-        """Create a new saved osquery SELECT in this tenant's library (or
-        the shared library, if superAdmin and shared=true)."""
+        """Create a new saved osquery SELECT in this tenant's library.
+
+        Not idempotent — calling this again with the same name creates
+        another, separate query rather than updating the existing one.
+        """
         client = client_factory()
         if client is None:
             return NO_TOKEN
-        body = {"name": name, "sql": sql, "shared": shared}
+        body = {"name": name, "sql": sql}
         if description is not None:
             body["description"] = description
         if platform is not None:
@@ -94,7 +90,7 @@ def register(mcp: FastMCP, client_factory: Callable[[], FleetClient | None]) -> 
         platform: Annotated[str | None, Field(description="New platform filter.")] = None,
     ) -> str:
         """Update a saved query (partial — only send the fields you want to
-        change). Editing a shared-library query requires the superAdmin role."""
+        change)."""
         client = client_factory()
         if client is None:
             return NO_TOKEN

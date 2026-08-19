@@ -19,7 +19,7 @@ def register(mcp: FastMCP, client_factory: Callable[[], FleetClient | None]) -> 
         page: Annotated[int, Field(description="0-based page number.")] = 0,
         per_page: Annotated[int, Field(description="Rows per page (max 200).")] = 25,
     ) -> str:
-        """List this tenant's scripts plus the shared-library scripts, by name."""
+        """List this tenant's scripts, by name."""
         client = client_factory()
         if client is None:
             return NO_TOKEN
@@ -46,7 +46,7 @@ def register(mcp: FastMCP, client_factory: Callable[[], FleetClient | None]) -> 
         except FleetError as e:
             return e.to_envelope()
 
-    @mcp.tool(annotations=ToolAnnotations(idempotentHint=True))
+    @mcp.tool()
     async def mspbotsfleet_create_script(
         name: Annotated[
             str, Field(description='File name, must end with ".sh" or ".ps1".')
@@ -54,23 +54,18 @@ def register(mcp: FastMCP, client_factory: Callable[[], FleetClient | None]) -> 
         contents: Annotated[
             str, Field(description="Script body, non-empty, UTF-8 ≤ 500,000 bytes.")
         ],
-        shared: Annotated[
-            bool,
-            Field(
-                description="Publish to the org-wide shared library instead of "
-                "this tenant only. Requires the superAdmin role."
-            ),
-        ] = False,
     ) -> str:
-        """Create a new script in this tenant's library (or the shared
-        library, if superAdmin and shared=true)."""
+        """Create a new script in this tenant's library.
+
+        Not idempotent — calling this again with the same name creates
+        another, separate script rather than updating the existing one.
+        Returns only {id, name}; fetch mspbotsfleet_get_script for the rest.
+        """
         client = client_factory()
         if client is None:
             return NO_TOKEN
         try:
-            result = await client.post(
-                "/api/fleet/scripts", {"name": name, "contents": contents, "shared": shared}
-            )
+            result = await client.post("/api/fleet/scripts", {"name": name, "contents": contents})
             return dump_json_capped(result)
         except FleetError as e:
             return e.to_envelope()
@@ -81,10 +76,7 @@ def register(mcp: FastMCP, client_factory: Callable[[], FleetClient | None]) -> 
         contents: Annotated[str, Field(description="New script body (replaces it in full).")],
     ) -> str:
         """Replace a script's contents. The file name cannot be changed.
-
-        Editing a shared-library script requires the superAdmin role — any
-        other tenant's attempt is rejected as if the script didn't exist.
-        """
+        Returns only {id, name}."""
         client = client_factory()
         if client is None:
             return NO_TOKEN
@@ -98,8 +90,7 @@ def register(mcp: FastMCP, client_factory: Callable[[], FleetClient | None]) -> 
     async def mspbotsfleet_delete_script(
         script_id: Annotated[int, Field(description="Fleet script id.")],
     ) -> str:
-        """Delete a script from Fleet, for every host. Same superAdmin
-        restriction as updating a shared-library script."""
+        """Delete a script from Fleet, for every host."""
         client = client_factory()
         if client is None:
             return NO_TOKEN

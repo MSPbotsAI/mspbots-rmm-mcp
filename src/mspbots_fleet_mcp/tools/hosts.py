@@ -28,9 +28,9 @@ def register(mcp: FastMCP, client_factory: Callable[[], FleetClient | None]) -> 
     ) -> str:
         """List the current tenant's hosts, optionally filtered by search/status.
 
-        Each row carries id, hostname, platform, status, primary_ip,
-        seen_time, and tenant ownership. The full inventory is fetched and
-        cached upstream for 15s, so results can lag a claim/delete briefly.
+        Each row carries id, hostname, platform, status, primary_ip, and
+        seen_time. The full inventory is fetched and cached upstream for
+        15s, so results can lag a claim/release/delete briefly.
         """
         client = client_factory()
         if client is None:
@@ -136,16 +136,50 @@ def register(mcp: FastMCP, client_factory: Callable[[], FleetClient | None]) -> 
         return dump_json_capped({"hostId": host_id, "deleted": True})
 
     @mcp.tool(annotations=ToolAnnotations(idempotentHint=True))
-    async def mspbotsfleet_claim_hosts() -> str:
-        """Match this tenant's previously-declared identifiers (hostname,
-        serial, or UUID) against unowned hosts and take ownership of any
-        that now match. Safe to call repeatedly — already-claimed hosts are
-        left alone."""
+    async def mspbotsfleet_claim_hosts(
+        identifiers: Annotated[
+            list[str] | None,
+            Field(
+                description="Hostnames, hardware serials, or UUIDs to declare for "
+                "this tenant, max 500. Omit or pass an empty list to just retry "
+                "identifiers declared on a previous call."
+            ),
+        ] = None,
+    ) -> str:
+        """Declare identifiers for this tenant and claim any unowned Fleet
+        hosts that match, now or later.
+
+        Idempotent — call again anytime to retry identifiers that haven't
+        matched a host yet. Returns claimed/waiting/rejected: waiting means
+        the identifier is declared but the host hasn't shown up in Fleet
+        yet; rejected means another tenant already declared it first.
+        """
         client = client_factory()
         if client is None:
             return NO_TOKEN
         try:
-            result = await client.post("/api/fleet/hosts/claim")
+            result = await client.post(
+                "/api/fleet/hosts/claim", {"identifiers": identifiers or []}
+            )
             return dump_json_capped(result)
         except FleetError as e:
             return e.to_envelope()
+
+    @mcp.tool(annotations=ToolAnnotations(idempotentHint=True))
+    async def mspbotsfleet_release_host(
+        host_id: Annotated[int, Field(description="Fleet host id.")],
+    ) -> str:
+        """Give up this tenant's ownership of a host without deleting it
+        from Fleet.
+
+        Also clears the matching declared identifier, so a future
+        mspbotsfleet_claim_hosts call won't immediately re-claim it.
+        """
+        client = client_factory()
+        if client is None:
+            return NO_TOKEN
+        try:
+            await client.delete(f"/api/fleet/hosts/{host_id}/claim")
+        except FleetError as e:
+            return e.to_envelope()
+        return dump_json_capped({"hostId": host_id, "released": True})

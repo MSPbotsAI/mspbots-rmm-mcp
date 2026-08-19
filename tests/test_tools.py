@@ -21,10 +21,11 @@ EXPECTED_TOOLS = {
     "mspbotsfleet_refetch_host": ({"host_id"}, {"idempotentHint"}),
     "mspbotsfleet_delete_host": ({"host_id"}, {"destructiveHint"}),
     "mspbotsfleet_claim_hosts": (set(), {"idempotentHint"}),
+    "mspbotsfleet_release_host": ({"host_id"}, {"idempotentHint"}),
     # scripts
     "mspbotsfleet_list_scripts": (set(), {"readOnlyHint"}),
     "mspbotsfleet_get_script": ({"script_id"}, {"readOnlyHint"}),
-    "mspbotsfleet_create_script": ({"name", "contents"}, {"idempotentHint"}),
+    "mspbotsfleet_create_script": ({"name", "contents"}, set()),
     "mspbotsfleet_update_script": ({"script_id", "contents"}, {"idempotentHint"}),
     "mspbotsfleet_delete_script": ({"script_id"}, {"destructiveHint"}),
     "mspbotsfleet_run_script": ({"script_id", "host_id"}, {"destructiveHint"}),
@@ -32,7 +33,7 @@ EXPECTED_TOOLS = {
     # queries
     "mspbotsfleet_list_queries": (set(), {"readOnlyHint"}),
     "mspbotsfleet_get_query": ({"query_id"}, {"readOnlyHint"}),
-    "mspbotsfleet_create_query": ({"name", "sql"}, {"idempotentHint"}),
+    "mspbotsfleet_create_query": ({"name", "sql"}, set()),
     "mspbotsfleet_update_query": ({"query_id"}, {"idempotentHint"}),
     "mspbotsfleet_delete_query": ({"query_id"}, {"destructiveHint"}),
     "mspbotsfleet_run_query": ({"query_id"}, {"idempotentHint"}),
