@@ -1,14 +1,118 @@
 import contextvars
+import json
+import re
 from collections.abc import Callable
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from .api_client import FleetClient
+from .api_client import FleetClient, FleetError
 from .config import Settings
+
+_IDENTIFIER_SPLIT_RE = re.compile(r"[,;\s]+")
+
+
+def _parse_claim_hosts_header(value: str) -> list[str]:
+    return [part for part in _IDENTIFIER_SPLIT_RE.split(value) if part]
+
+
+async def _buffer_request_body(receive: Receive) -> tuple[bytes, Receive]:
+    """Read the full request body and return it alongside a replacement
+    receive() that replays the same messages, so the wrapped ASGI app can
+    still consume the body normally."""
+    body = b""
+    more_body = True
+    while more_body:
+        message = await receive()
+        if message["type"] != "http.request":
+            break
+        body += message.get("body", b"")
+        more_body = message.get("more_body", False)
+
+    replayed: Message | None = {"type": "http.request", "body": body, "more_body": False}
+
+    async def replay_receive() -> Message:
+        nonlocal replayed
+        if replayed is not None:
+            message, replayed = replayed, None
+            return message
+        return await receive()
+
+    return body, replay_receive
+
+
+def _is_initialize_request(body: bytes) -> bool:
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return False
+    return isinstance(payload, dict) and payload.get("method") == "initialize"
+
+
+def _format_claim_summary(declared_count: int, outcome: dict) -> str:
+    claimed = len(outcome.get("claimed") or [])
+    waiting = len(outcome.get("waiting") or [])
+    rejected = len(outcome.get("rejected") or [])
+    return (
+        f"This connector declared {declared_count} machine(s) on connect: "
+        f"{claimed} claimed, {waiting} waiting to enrol, {rejected} owned by "
+        "another tenant."
+    )
+
+
+async def _run_claim_on_connect(client: FleetClient, identifiers: list[str]) -> str:
+    try:
+        outcome = await client.post("/api/fleet/hosts/claim", {"identifiers": identifiers})
+    except FleetError as e:
+        return f"Host claim on connect failed: {e.message}"
+    return _format_claim_summary(len(identifiers), outcome or {})
+
+
+def _rewrite_sse_instructions(raw: bytes, note: str) -> bytes:
+    """Append `note` to the initialize response's result.instructions field.
+
+    The streamable-http transport wraps the JSON-RPC response in an SSE
+    frame ("event: message\\ndata: {...}\\n\\n"); this rewrites only the
+    `data:` line's JSON payload and leaves the rest of the frame untouched.
+    """
+    text = raw.decode("utf-8", errors="replace")
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        if not line.startswith("data:"):
+            continue
+        try:
+            payload = json.loads(line[len("data:") :].strip())
+        except ValueError:
+            continue
+        result = payload.get("result") if isinstance(payload, dict) else None
+        if not isinstance(result, dict) or "instructions" not in result:
+            continue
+        existing = result.get("instructions") or ""
+        result["instructions"] = f"{existing}\n\n{note}" if existing else note
+        lines[i] = "data: " + json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        return "\n".join(lines).encode("utf-8")
+    return raw
+
+
+def _wrap_send_to_inject_note(send: Send, note: str) -> Send:
+    """Buffer the (small, single-message) initialize response body so it
+    can be rewritten in one piece before being sent."""
+    body_chunks: list[bytes] = []
+
+    async def wrapped_send(message: Message) -> None:
+        if message["type"] == "http.response.body":
+            body_chunks.append(message.get("body", b""))
+            if message.get("more_body", False):
+                return
+            modified = _rewrite_sse_instructions(b"".join(body_chunks), note)
+            await send({"type": "http.response.body", "body": modified, "more_body": False})
+            return
+        await send(message)
+
+    return wrapped_send
 
 # Per-request credential isolation via contextvars.
 # GatewayTokenMiddleware sets this before the MCP handler runs.
@@ -35,6 +139,11 @@ class GatewayTokenMiddleware:
     Reads X-MSP-Token, X-MSP-Tenant-Id, and X-MSP-Host (all required) from
     request headers and stores them in the contextvar. Returns 401 if any is
     missing on /mcp requests.
+
+    Also implements the optional X-Claim-Hosts header: on an `initialize`
+    request only, it runs the equivalent of a claim_hosts call and appends
+    the outcome to that response's `instructions` field. Every other
+    request ignores the header, matching the upstream API contract.
     """
 
     def __init__(self, app: ASGIApp, settings: Settings):
@@ -65,12 +174,20 @@ class GatewayTokenMiddleware:
                         "the X-MSP-Host header (Fleet API host)"
                     ),
                     "required_headers": ["X-MSP-Token", "X-MSP-Tenant-Id", "X-MSP-Host"],
-                    "optional_headers": [],
+                    "optional_headers": ["X-Claim-Hosts"],
                 },
                 status_code=401,
             )
             await response(scope, receive, send)
             return
+
+        claim_hosts_header = request.headers.get("x-claim-hosts")
+        identifiers = _parse_claim_hosts_header(claim_hosts_header) if claim_hosts_header else []
+        if identifiers:
+            body, receive = await _buffer_request_body(receive)
+            if _is_initialize_request(body):
+                note = await _run_claim_on_connect(FleetClient(token, host, tenant_id), identifiers)
+                send = _wrap_send_to_inject_note(send, note)
 
         ctx_token = _gateway_creds_var.set((token, host, tenant_id))
         try:

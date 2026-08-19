@@ -35,7 +35,8 @@ third-party integration. Typical uses:
 ### Hosts
 
 主机无法通过接口创建：机器装上 fleetd 并注册后自动出现，再按本租户声明过的标识符
-（主机名/序列号/UUID）认领归属，见 `mspbotsfleet_claim_hosts`。
+（主机名/序列号/UUID）认领归属，见 `mspbotsfleet_claim_hosts`。也可以在建连时用
+`X-Claim-Hosts` header 自动做一次同样的事，见上面"授权参数说明"。
 
 | Tool | 功能 | 参数 |
 |---|---|---|
@@ -117,8 +118,9 @@ MCP caller — kept consistent with `mspbots-agent-mcp` / `ticketqa-mcp`):
 | `X-MSP-Token` | string | 必填 | Fleet Platform 已签发的访问凭证 (JWT bearer token)。本服务原样转发为下游请求的 `Authorization: Bearer <token>`。 | `X-MSP-Token: <jwt-bearer-token>` |
 | `X-MSP-Tenant-Id` | string | 必填 | 租户标识。转发给下游 API 时改名为 `X_Tenant_ID` header(租户也已内嵌在 JWT 中)。 | `X-MSP-Tenant-Id: <tenant-id>` |
 | `X-MSP-Host` | string | 必填 | Fleet API 所在的 host。 | `X-MSP-Host: https://agent.mspbots.ai` |
+| `X-Claim-Hosts` | string | 可选 | 逗号/分号/空白分隔的主机名、序列号或 UUID。**只在这次请求是 `initialize` 时生效**，等价于自动调一次 `mspbotsfleet_claim_hosts`；结果（或失败原因）会拼在这次 `initialize` 响应的 `instructions` 末尾，不会导致连接失败。其余请求忽略此 header。 | `X-Claim-Hosts: mac-01, C02XY1234` |
 
-Missing any of the three headers returns `401 Unauthorized`.
+Missing any of the three required headers returns `401 Unauthorized`.
 
 > 下游 Fleet API 本身对鉴权失败（缺 token/签名错误/角色不足）统一返回 **403**，
 > 不是 401——401 只发生在本服务这一层（缺 gateway header）。
