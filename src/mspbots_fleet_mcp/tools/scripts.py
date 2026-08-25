@@ -90,7 +90,10 @@ def register(mcp: FastMCP, client_factory: Callable[[], FleetClient | None]) -> 
     async def mspbotsfleet_delete_script(
         script_id: Annotated[int, Field(description="Fleet script id.")],
     ) -> str:
-        """Delete a script from Fleet, for every host."""
+        """Permanently remove this script from the tenant's library and from
+        every host that could run it. Irreversible — there is no undo, and a
+        host with this script currently running or queued loses access to it
+        mid-flight."""
         client = client_factory()
         if client is None:
             return NO_TOKEN
@@ -116,6 +119,8 @@ def register(mcp: FastMCP, client_factory: Callable[[], FleetClient | None]) -> 
     ) -> str:
         """Run a script on a host. Runs arbitrary code on that machine —
         treat as destructive even though Fleet itself doesn't undo it.
+        Runs once, on demand — there is no recurring/scheduled execution
+        here; to run it again later, call this again at that time.
 
         With sync=false (default) this returns an executionId to poll via
         mspbotsfleet_get_script_result; with sync=true it waits and returns

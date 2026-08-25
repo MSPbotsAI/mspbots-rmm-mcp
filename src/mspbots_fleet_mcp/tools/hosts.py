@@ -81,14 +81,21 @@ def register(mcp: FastMCP, client_factory: Callable[[], FleetClient | None]) -> 
             list[str],
             Field(
                 description=(
-                    "Full replacement set of manual label names (each must already "
-                    "exist as a manual label in Fleet). Backend diffs against the "
-                    "current set and adds/removes accordingly."
+                    "The COMPLETE set of manual label names this host should end up "
+                    "with (each must already exist as a manual label in Fleet) — "
+                    "not a delta. Any manual label not in this list gets removed. "
+                    "To add or remove just one label without disturbing the rest, "
+                    "first call mspbotsfleet_get_host to read the host's current "
+                    "manual labels, then pass that full list back with your "
+                    "one label added or removed."
                 )
             ),
         ],
     ) -> str:
-        """Replace a host's manual labels (full replace, not a merge)."""
+        """Replace a host's entire set of manual labels in one call — this is
+        not additive. Passing a single label name deletes every other manual
+        label the host had; see the labels parameter for how to add/remove
+        just one without losing the rest."""
         client = client_factory()
         if client is None:
             return NO_TOKEN
