@@ -13,8 +13,7 @@ from ._json import error_envelope
 _APP_PREFIX = "/apps/mb-platform-rmm"
 
 # read=65s: run_script's dispatch itself is quick (async, pull-based), but
-# some upstream RMM calls (e.g. script validation) can be slow — keep the
-# same generous timeout the old Fleet client used.
+# some upstream RMM calls (e.g. script validation) can be slow.
 _TIMEOUT = httpx.Timeout(connect=5.0, read=65.0, write=10.0, pool=5.0)
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _MAX_RETRIES = 3
