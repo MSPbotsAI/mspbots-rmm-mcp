@@ -5,16 +5,16 @@ import httpx
 
 from ._json import error_envelope
 
-# The Fleet Platform app is mounted at this path prefix on the tenant host:
-# "https://<host>/apps/mb-platform-fleet/<sub-path>".
+# The RMM Control app is mounted at this path prefix on the tenant host:
+# "https://<host>/apps/mb-platform-rmm/<sub-path>".
 # X-MSP-Host only carries the bare host; do not hardcode the prefix elsewhere.
 # Callers pass the full sub-path below this prefix, e.g.
-#   "/api/fleet/hosts", "/api/fleet/scripts/<id>/run".
-_APP_PREFIX = "/apps/mb-platform-fleet"
+#   "/api/rmm/devices", "/api/rmm/scripts/<id>/run".
+_APP_PREFIX = "/apps/mb-platform-rmm"
 
-# read=60s: run_script(sync=true) waits up to 60s upstream, run_query up to
-# 45s — the client timeout must exceed both or a slow-but-successful sync
-# call would be cut off client-side before the server's own timeout fires.
+# read=65s: run_script's dispatch itself is quick (async, pull-based), but
+# some upstream RMM calls (e.g. script validation) can be slow — keep the
+# same generous timeout the old Fleet client used.
 _TIMEOUT = httpx.Timeout(connect=5.0, read=65.0, write=10.0, pool=5.0)
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _MAX_RETRIES = 3
@@ -36,13 +36,16 @@ def _get_http_client() -> httpx.AsyncClient:
 
 
 # status_code -> (error code, retryable). status_code 0 means a network/
-# connection-level failure (no response at all).
+# connection-level failure (no response at all). 501 is the RMM Control
+# API's capability-gating status — permanent for that connection, must
+# never be retried (see README "Capability gating").
 _STATUS_TO_CODE: dict[int, tuple[str, bool]] = {
     0: ("upstream_error", True),
     400: ("invalid_argument", False),
     403: ("unauthorized", False),
     404: ("not_found", False),
     429: ("rate_limited", True),
+    501: ("not_supported", False),
     502: ("upstream_error", True),
 }
 
@@ -55,20 +58,20 @@ def _classify(status_code: int) -> tuple[str, bool]:
     return "invalid_argument", False
 
 
-class FleetError(Exception):
+class RmmError(Exception):
     def __init__(self, status_code: int, message: str):
         self.status_code = status_code
         self.message = message
-        super().__init__(f"Fleet Platform API error {status_code}: {message}")
+        super().__init__(f"RMM Control API error {status_code}: {message}")
 
     def to_envelope(self) -> str:
         code, retryable = _classify(self.status_code)
         return error_envelope(code, self.message, retryable)
 
 
-class FleetClient:
-    """Async httpx client wrapping the MSPbots Fleet Platform API
-    (`/apps/mb-platform-fleet/api/fleet/*`).
+class RmmClient:
+    """Async httpx client wrapping the MSPbots RMM Control API
+    (`/apps/mb-platform-rmm/api/rmm/*`).
 
     Reuses the module-level connection pool (see _get_http_client) across
     every call made through this instance, rather than opening a new
@@ -79,10 +82,12 @@ class FleetClient:
     platform convention (also relied on by the sibling agent/forms/ticketqa
     services).
 
-    Note: the Fleet API returns 403 (not 401) for any authentication or
-    authorization failure — missing token, bad signature, or insufficient
+    Note: the RMM Control API returns 403 (not 401) for any authentication
+    or authorization failure — missing token, bad signature, or insufficient
     role all collapse to the same `{"message": "Permission denied", "code":
-    403}` shape. That's the upstream contract, not a bug in this client.
+    403}` shape. That's the upstream contract, not a bug in this client. It
+    returns 501 (not a generic 4xx) when the connected RMM vendor doesn't
+    support the requested capability — see README "Capability gating".
     """
 
     def __init__(self, access_token: str, host: str, tenant_id: str):
@@ -112,8 +117,8 @@ class FleetClient:
     async def patch(self, path: str, json_body: Any) -> Any:
         return await self._request("PATCH", path, json_body=json_body)
 
-    async def delete(self, path: str) -> Any:
-        return await self._request("DELETE", path)
+    async def delete(self, path: str, params: dict | None = None) -> Any:
+        return await self._request("DELETE", path, params=params)
 
     async def _request(
         self, method: str, path: str, params: dict | None = None, json_body: Any = None
@@ -134,7 +139,7 @@ class FleetClient:
                 if attempt < _MAX_RETRIES:
                     await asyncio.sleep(min(2**attempt, _MAX_BACKOFF_SECONDS))
                     continue
-                raise FleetError(0, f"{e or type(e).__name__} (url={url})") from e
+                raise RmmError(0, f"{e or type(e).__name__} (url={url})") from e
 
             if resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES:
                 delay = self._retry_delay(resp, attempt)
@@ -146,8 +151,8 @@ class FleetClient:
         # Unreachable in practice (loop always returns or raises above), but
         # keeps type checkers happy and guards against future edits.
         if last_exc:
-            raise FleetError(0, f"{last_exc}") from last_exc
-        raise FleetError(0, "request failed with no response")
+            raise RmmError(0, f"{last_exc}") from last_exc
+        raise RmmError(0, "request failed with no response")
 
     def _retry_delay(self, resp: httpx.Response, attempt: int) -> float:
         retry_after = resp.headers.get("Retry-After")
@@ -166,11 +171,18 @@ class FleetClient:
         except ValueError:
             body = {"raw_response": resp.text}
         if resp.status_code >= 400:
-            # `detail` on a Fleet error is documented as "the raw upstream
-            # response body" when the error originates from the real Fleet
-            # server — that can be arbitrary/unbounded content, so it is
-            # deliberately not folded into the message (SOP §4.2: never dump
-            # a full API response into a tool-visible error message).
-            message = body.get("message") if isinstance(body, dict) else str(body)
-            raise FleetError(resp.status_code, message or "unknown error")
+            # The RMM Control API's error envelope is {message, detail, code}.
+            # `detail` is deliberately not folded into the message when it's
+            # the raw upstream response body — that can be arbitrary/
+            # unbounded content (SOP §4.2: never dump a full API response
+            # into a tool-visible error message). A short, non-null detail
+            # is appended since it's usually the more specific cause.
+            if isinstance(body, dict):
+                message = body.get("message") or "unknown error"
+                detail = body.get("detail")
+                if isinstance(detail, str) and detail and len(detail) < 200:
+                    message = f"{message} ({detail})"
+            else:
+                message = str(body)
+            raise RmmError(resp.status_code, message)
         return body

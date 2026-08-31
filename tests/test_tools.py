@@ -2,41 +2,45 @@
 
 No network calls: tool enumeration goes through FastMCP's in-process
 list_tools(), and the error-code mapping is tested directly against
-FleetError, independent of any real HTTP request.
+RmmError, independent of any real HTTP request.
 """
 
 import pytest
 
-from mspbots_fleet_mcp.api_client import FleetError
-from mspbots_fleet_mcp.config import Settings
-from mspbots_fleet_mcp.server import create_mcp_server
+from mspbots_rmm_mcp.api_client import RmmError
+from mspbots_rmm_mcp.config import Settings
+from mspbots_rmm_mcp.server import create_mcp_server
 
 # name -> (required params, expected annotation hint set to True)
 EXPECTED_TOOLS = {
-    # hosts
-    "mspbotsfleet_list_hosts": (set(), {"readOnlyHint"}),
-    "mspbotsfleet_get_host": ({"host_id"}, {"readOnlyHint"}),
-    "mspbotsfleet_list_host_scripts": ({"host_id"}, {"readOnlyHint"}),
-    "mspbotsfleet_set_host_labels": ({"host_id", "labels"}, {"idempotentHint"}),
-    "mspbotsfleet_refetch_host": ({"host_id"}, {"idempotentHint"}),
-    "mspbotsfleet_delete_host": ({"host_id"}, {"destructiveHint"}),
-    "mspbotsfleet_claim_hosts": (set(), {"idempotentHint"}),
-    "mspbotsfleet_release_host": ({"host_id"}, {"idempotentHint"}),
+    # devices
+    "mspbotsrmm_list_devices": (set(), {"readOnlyHint"}),
+    "mspbotsrmm_get_device": ({"id"}, {"readOnlyHint"}),
+    "mspbotsrmm_refetch_device": ({"id"}, {"idempotentHint"}),
     # scripts
-    "mspbotsfleet_list_scripts": (set(), {"readOnlyHint"}),
-    "mspbotsfleet_get_script": ({"script_id"}, {"readOnlyHint"}),
-    "mspbotsfleet_create_script": ({"name", "contents"}, set()),
-    "mspbotsfleet_update_script": ({"script_id", "contents"}, {"idempotentHint"}),
-    "mspbotsfleet_delete_script": ({"script_id"}, {"destructiveHint"}),
-    "mspbotsfleet_run_script": ({"script_id", "host_id"}, {"destructiveHint"}),
-    "mspbotsfleet_get_script_result": ({"execution_id"}, {"readOnlyHint"}),
-    # queries
-    "mspbotsfleet_list_queries": (set(), {"readOnlyHint"}),
-    "mspbotsfleet_get_query": ({"query_id"}, {"readOnlyHint"}),
-    "mspbotsfleet_create_query": ({"name", "sql"}, set()),
-    "mspbotsfleet_update_query": ({"query_id"}, {"idempotentHint"}),
-    "mspbotsfleet_delete_query": ({"query_id"}, {"destructiveHint"}),
-    "mspbotsfleet_run_query": ({"query_id"}, {"idempotentHint"}),
+    "mspbotsrmm_list_scripts": (set(), {"readOnlyHint"}),
+    "mspbotsrmm_get_script": ({"id"}, {"readOnlyHint"}),
+    "mspbotsrmm_create_script": ({"name", "contents"}, set()),
+    "mspbotsrmm_update_script": ({"id", "name", "contents"}, {"idempotentHint"}),
+    "mspbotsrmm_delete_script": ({"id"}, {"destructiveHint"}),
+    # execution
+    "mspbotsrmm_run_script": ({"id", "device_ids"}, {"destructiveHint"}),
+    "mspbotsrmm_list_script_runs": ({"id"}, {"readOnlyHint"}),
+}
+
+# Tools whose docstrings deliberately exceed the SOP's 500-char description
+# guideline (§2.2, a "should" not a hard rule): they carry load-bearing
+# guidance an agent needs to call them correctly and safely.
+_LONG_DESCRIPTION_EXCEPTIONS = {
+    # Destructive, dispatches real work to production endpoints — the
+    # confirm=false-by-default dry-run behavior, the "poll list_script_runs
+    # instead" pointer, and the partial-dispatch warning are all things an
+    # agent needs to know before calling this, not decorative detail.
+    "mspbotsrmm_run_script",
+    # Explains matchConfidence (exact vs heuristic result matching) and the
+    # terminal-status polling contract — both needed to interpret output
+    # correctly, not optional color.
+    "mspbotsrmm_list_script_runs",
 }
 
 
@@ -54,7 +58,8 @@ async def test_tools_list_snapshot():
         assert required == expected_required, f"{name}: required={required}"
 
         description = tool.description or ""
-        assert len(description) <= 500, f"{name}: description too long ({len(description)})"
+        if name not in _LONG_DESCRIPTION_EXCEPTIONS:
+            assert len(description) <= 500, f"{name}: description too long ({len(description)})"
         first_line = description.strip().splitlines()[0] if description.strip() else ""
         assert len(first_line) <= 100, f"{name}: first line too long: {first_line!r}"
         assert "API:" not in description, f"{name}: leaked implementation detail"
@@ -69,6 +74,16 @@ async def test_tools_list_snapshot():
                 if getattr(annotations, hint, None) is True:
                     actual_hints.add(hint)
         assert actual_hints == expected_hints, f"{name}: hints={actual_hints}"
+
+
+@pytest.mark.asyncio
+async def test_reboot_device_is_not_registered():
+    # Per the RMM Control API docs: the route exists but no vendor adapter
+    # implements it, so it always answers 501 — must not be an MCP tool.
+    mcp = create_mcp_server(Settings())
+    tools = await mcp.list_tools()
+    names = {t.name for t in tools}
+    assert not any("reboot" in name for name in names), names
 
 
 @pytest.mark.asyncio
@@ -88,6 +103,7 @@ async def test_service_instructions_present_and_bounded():
         (409, "invalid_argument", False),
         (429, "rate_limited", True),
         (500, "upstream_error", True),
+        (501, "not_supported", False),
         (502, "upstream_error", True),
         (503, "upstream_error", True),
     ],
@@ -95,7 +111,7 @@ async def test_service_instructions_present_and_bounded():
 def test_error_envelope_mapping(status_code, expected_code, expected_retryable):
     import json
 
-    err = FleetError(status_code, "boom")
+    err = RmmError(status_code, "boom")
     envelope = json.loads(err.to_envelope())
     assert envelope["error"]["code"] == expected_code
     assert envelope["error"]["retryable"] is expected_retryable
