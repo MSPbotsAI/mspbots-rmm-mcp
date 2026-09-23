@@ -98,6 +98,7 @@ async def test_service_instructions_present_and_bounded():
     [
         (0, "upstream_error", True),
         (400, "invalid_argument", False),
+        (401, "unauthorized", False),
         (403, "unauthorized", False),
         (404, "not_found", False),
         (409, "invalid_argument", False),
@@ -116,3 +117,21 @@ def test_error_envelope_mapping(status_code, expected_code, expected_retryable):
     assert envelope["error"]["code"] == expected_code
     assert envelope["error"]["retryable"] is expected_retryable
     assert envelope["error"]["message"] == "boom"
+
+
+def test_downstream_headers_carry_the_key_as_x_api_key():
+    """The RMM Control API reads the credential from X-API-Key.
+
+    Pinned because getting this wrong is invisible in any local test: the API
+    answers a missing key and a wrong-header key with the same 401, so a
+    regression here looks exactly like an expired credential.
+    """
+    from mspbots_rmm_mcp.api_client import RmmClient
+
+    client = RmmClient("mbk_test_key", "https://agentint.mspbots.ai", "tenant-123")
+    headers = client._headers()
+
+    assert headers["X-API-Key"] == "mbk_test_key"
+    assert headers["X_Tenant_ID"] == "tenant-123"
+    # Transitional; remove with the Authorization line in _headers().
+    assert headers["Authorization"] == "Bearer mbk_test_key"

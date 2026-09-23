@@ -41,6 +41,12 @@ def _get_http_client() -> httpx.AsyncClient:
 _STATUS_TO_CODE: dict[int, tuple[str, bool]] = {
     0: ("upstream_error", True),
     400: ("invalid_argument", False),
+    # 401 and 403 both mean "your credential did not get you in". Without the
+    # 401 entry it fell through to the invalid_argument default, so an expired
+    # or unknown API key reached the agent as a bad-parameter error and the
+    # agent would tell the user to fix their arguments instead of to
+    # re-authorize.
+    401: ("unauthorized", False),
     403: ("unauthorized", False),
     404: ("not_found", False),
     429: ("rate_limited", True),
@@ -76,17 +82,17 @@ class RmmClient:
     every call made through this instance, rather than opening a new
     connection per request.
 
-    The tenant is embedded in the JWT bearer token. We additionally forward
-    the tenant id as an `X_Tenant_ID` header to stay consistent with the
-    platform convention (also relied on by the sibling agent/forms/ticketqa
-    services).
+    The credential is an opaque platform-issued API key (`mbk_...`), not a
+    JWT: nothing is embedded in it, so the tenant id always travels separately
+    as an `X_Tenant_ID` header, per the platform convention (also relied on by
+    the sibling agent/forms/ticketqa services).
 
-    Note: the RMM Control API returns 403 (not 401) for any authentication
-    or authorization failure — missing token, bad signature, or insufficient
-    role all collapse to the same `{"message": "Permission denied", "code":
-    403}` shape. That's the upstream contract, not a bug in this client. It
-    returns 501 (not a generic 4xx) when the connected RMM vendor doesn't
-    support the requested capability — see README "Capability gating".
+    Note: the RMM Control API answers any authentication failure with
+    `{"code": 401, "message": "Unauthorized"}` — missing key, unknown key, or
+    insufficient role all collapse to that one shape, so the status code alone
+    never tells you which. That's the upstream contract, not a bug in this
+    client. It returns 501 (not a generic 4xx) when the connected RMM vendor
+    doesn't support the requested capability — see README "Capability gating".
     """
 
     def __init__(self, access_token: str, host: str, tenant_id: str):
@@ -96,6 +102,14 @@ class RmmClient:
 
     def _headers(self) -> dict[str, str]:
         return {
+            "X-API-Key": self._token,
+            # NOTE(transition, 2026-09-23): the RMM Control API moved from
+            # `Authorization: Bearer` to `X-API-Key` on the same day this
+            # server's own inbound header was renamed. Both are sent while the
+            # two sides land, because a wrong guess here is indistinguishable
+            # from an expired key: every call just returns 401. Drop the
+            # Authorization line once the API is confirmed to read X-API-Key,
+            # together with the inbound X-MSP-Token fallback in server.py.
             "Authorization": f"Bearer {self._token}",
             "X_Tenant_ID": self._tenant_id,
             "Content-Type": "application/json",
