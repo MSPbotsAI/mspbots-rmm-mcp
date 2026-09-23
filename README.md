@@ -31,7 +31,7 @@ third-party integration. Typical uses:
 
 ## Tools
 
-所有工具的凭证均来自请求头（`X-MSP-Token` / `X-MSP-Tenant-Id` / `X-MSP-Host`），
+所有工具的凭证均来自请求头（`X-API-Key` / `X-MSP-Tenant-Id` / `X-MSP-Host`），
 工具参数里不需要传 token。除以下列出的参数外，**每个工具都额外接受一个可选的
 `connection`**（RMM connection UUID）——租户只连了一个 RMM 时可省略，连了多个才
 需要显式传。
@@ -143,9 +143,16 @@ MCP caller — kept consistent with `mspbots-agent-mcp` / `ticketqa-mcp`):
 
 | Header | 类型 | 是否必填 | 字段描述 | Example |
 |---|---|---|---|---|
-| `X-MSP-Token` | string | 必填 | RMM Control API 已签发的访问凭证 (JWT bearer token)。本服务原样转发为下游请求的 `Authorization: Bearer <token>`。 | `X-MSP-Token: <jwt-bearer-token>` |
+| `X-API-Key` | string | 必填 | RMM Control API 已签发的访问凭证 (JWT bearer token)。本服务原样转发为下游请求的 `Authorization: Bearer <token>`。 | `X-API-Key: <jwt-bearer-token>` |
 | `X-MSP-Tenant-Id` | string | 必填 | 租户标识。转发给下游 API 时改名为 `X_Tenant_ID` header(租户也已内嵌在 JWT 中)。 | `X-MSP-Tenant-Id: <tenant-id>` |
 | `X-MSP-Host` | string | 必填 | RMM Control API 所在的 host。 | `X-MSP-Host: https://agent.mspbots.ai` |
+
+> ⏳ **过渡期兼容（2026-09-23 起）**：`X-API-Key` 取代了原来的 `X-MSP-Token`。改名前写入的
+> 租户凭据仍以旧名存在注册库里、由网关原样注入，因此中间件在读不到 `X-API-Key` 时会回退读
+> `X-MSP-Token`；两个都在时以 `X-API-Key` 为准。等所有租户凭据都按新名重存一遍后，删掉
+> `server.py` 里那段回退和 `tests/test_middleware.py::test_legacy_token_header_is_still_accepted`。
+>
+> `X-MSP-Tenant-Id` **不受本次改名影响**，仍然必填，仍然转发给下游。
 
 Missing any of the three required headers returns `401 Unauthorized`.
 
@@ -168,7 +175,7 @@ POST http://localhost:8080/mcp
 
 Connect your MCP client with:
 - Transport: `http` (Streamable HTTP / SSE)
-- Headers: `X-MSP-Token`, `X-MSP-Tenant-Id`, `X-MSP-Host` (all required)
+- Headers: `X-API-Key`, `X-MSP-Tenant-Id`, `X-MSP-Host` (all required)
 
 ## 测试示例 (Test Example)
 
@@ -176,7 +183,7 @@ Connect your MCP client with:
 curl -X POST http://localhost:8080/mcp \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
-  -H "X-MSP-Token: <token>" \
+  -H "X-API-Key: <token>" \
   -H "X-MSP-Tenant-Id: <tenant-id>" \
   -H "X-MSP-Host: https://agent.mspbots.ai" \
   -d '{
