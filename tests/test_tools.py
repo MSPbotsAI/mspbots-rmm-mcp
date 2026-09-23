@@ -133,5 +133,7 @@ def test_downstream_headers_carry_the_key_as_x_api_key():
 
     assert headers["X-API-Key"] == "mbk_test_key"
     assert headers["X_Tenant_ID"] == "tenant-123"
-    # Transitional; remove with the Authorization line in _headers().
-    assert headers["Authorization"] == "Bearer mbk_test_key"
+    # No Authorization header: the platform standardised on the API key and
+    # dropped the JWT (PRD-19165). Sending a stale Bearer alongside it would
+    # give the API a second credential to prefer.
+    assert "Authorization" not in headers

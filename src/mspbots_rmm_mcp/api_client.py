@@ -103,14 +103,6 @@ class RmmClient:
     def _headers(self) -> dict[str, str]:
         return {
             "X-API-Key": self._token,
-            # NOTE(transition, 2026-09-23): the RMM Control API moved from
-            # `Authorization: Bearer` to `X-API-Key` on the same day this
-            # server's own inbound header was renamed. Both are sent while the
-            # two sides land, because a wrong guess here is indistinguishable
-            # from an expired key: every call just returns 401. Drop the
-            # Authorization line once the API is confirmed to read X-API-Key,
-            # together with the inbound X-MSP-Token fallback in server.py.
-            "Authorization": f"Bearer {self._token}",
             "X_Tenant_ID": self._tenant_id,
             "Content-Type": "application/json",
             "Accept": "application/json",
